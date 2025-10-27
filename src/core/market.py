@@ -116,7 +116,7 @@ class Exchange:
             # 3. Quitamos la orden de la lista de activas
             self.active_orders.remove(order) 
         
-    def update_orders(self, timestamp: any):
+    def update_exchange_status(self, timestamp: any):
         """
         Update the engine's active orders for the given timestamp and record the resulting portfolio value.
         This method iterates over a shallow copy of self.active_orders and checks each order
