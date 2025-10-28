@@ -24,9 +24,13 @@ class MLStrategy(Strategy):
     """
     Estrategia basada en un modelo de Machine Learning para generar señales.
     """
-    def __init__(self, model: LearningModel):
+    def __init__(self, model: LearningModel,
+                 tp:List[float],
+                 sl:List[float]):
         self.model = model
         self.signal_threshold = 0.5 # Umbral para decidir entre long (1) o short (0)
+        self.sl = sl
+        self.tp = tp
         print("MLStrategy inicializada con un modelo.")
 
     def get_signals(self, features: pd.DataFrame) -> np.ndarray:
@@ -109,6 +113,11 @@ class StrategyOrchestrator:
         self.strategy = strategy
         self.exchange = exchange
         self.order_map = {1: 'long', 0: 'short'}
+        self.order_size=1000
+        self.tpl = strategy.tp[0]
+        self.tps = strategy.tp[1]
+        self.sll = strategy.sl[0]
+        self.sls = strategy.sl[1]
         print("StrategyOrchestrator listo para operar.")
 
     def run(self, historical_data: pd.DataFrame, features_columns: List[str]):
@@ -127,9 +136,18 @@ class StrategyOrchestrator:
             
             # 3. Mapear la señal a una orden y ejecutar
             order_type = self.order_map.get(signal)
+
+            take_profit = self.tpl if order_type == 'long' else self.tps
+            stop_loss = self.sll if order_type == 'long' else self.sls
+        
             
             if order_type:
-                self.exchange.place_order(order_type=order_type, time=index)
+                self.exchange.place_order(type=order_type,
+                                          timestamp=index,
+                                          quantity=self.order_size,
+                                          take_profit = take_profit,
+                                          stop_loss=stop_loss
+                                          )
             else:
                 # Si la señal es -1 (neutral) o no reconocida, no hacemos nada.
                 print(f"[{index}] Señal neutral. Manteniendo posición actual.")
