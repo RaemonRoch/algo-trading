@@ -81,7 +81,9 @@ class BackTesting:
         
         fig.suptitle('Rendimiento del Portafolio por Fold', fontsize=16, y=0.95)
 
-        for fold_num, performance_df in self.performance_per_fold.items():
+        for fold_num, performance in self.performance_per_fold.items():
+            performance_df = pd.DataFrame(performance)
+            performance_df['timestamp'] = pd.to_datetime(performance_df['timestamp'], format='ISO8601')
             ax = axes[fold_num]
             ax.plot(performance_df['timestamp'], performance_df['portfolio_value'], label=f'Fold {fold_num + 1}')
             ax.set_ylabel('Valor del Portafolio')
