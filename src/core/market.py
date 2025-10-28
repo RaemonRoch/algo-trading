@@ -34,7 +34,7 @@ class Exchange:
         """Get the last price from data based on timestamp."""
         row = self.data[self.data['Date'] == timestamp]
         if not row.empty:
-            return row['close'].values[0]
+            return row['Close'].values[0]
         else:
             raise ValueError("Timestamp not found in data.")
 
