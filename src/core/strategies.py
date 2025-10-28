@@ -139,8 +139,7 @@ class StrategyOrchestrator:
 
             take_profit = self.tpl if order_type == 'long' else self.tps
             stop_loss = self.sll if order_type == 'long' else self.sls
-        
-            
+    
             if order_type:
                 self.exchange.place_order(type=order_type,
                                           timestamp=index,
@@ -151,7 +150,8 @@ class StrategyOrchestrator:
             else:
                 # Si la señal es -1 (neutral) o no reconocida, no hacemos nada.
                 print(f"[{index}] Señal neutral. Manteniendo posición actual.")
-        
+
+            self.exchange.update_exchange_status(index)
         print("--- Simulación finalizada ---")
 
 
