@@ -2,19 +2,36 @@ import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 
-
 @dataclass
 class Exchange:
-    """Almacena el estado y el historial del portafolio."""
+    """
+    Almacena el estado y el historial del portafolio para una estrategia
+    de trading de pares (market-neutral).
+    """
+    asset1_col: str
+    asset2_col: str
+    historical_data: pd.DataFrame  # ¡NUEVO! Los datos se inyectan.
+    
     balance: float = 1_000_000
-    fee_rate: float = 0.001  # 0.1% fee
-    # Load data
-    data = pd.read_csv("../data/Binance_BTCUSDT_1h.csv", header=1)[['Date', 'Close']]
-    # Control attributes
+    fee_rate: float = 0.00125      # Requerimiento: 0.125%
+    borrow_rate_daily: float = 0.0025  # Requerimiento: 0.25%
+    
+    # --- Atributos de Estado ---
+    positions: dict = field(default_factory=dict)
     historical_balance: list = field(default_factory=list)
-    active_orders: list = field(default_factory=list)
-    executed_orders: list = field(default_factory=list)
+    executed_trades: list = field(default_factory=list)
+    last_timestamp: any = None
 
+    def __post_init__(self):
+        """Inicializa el diccionario de posiciones después de crear la instancia."""
+        self.positions = {self.asset1_col: 0.0, self.asset2_col: 0.0}
+        
+        # Asumimos que el índice del DataFrame son los timestamps
+        if not isinstance(self.historical_data.index, pd.DatetimeIndex):
+            print("Advertencia: El índice de historical_data no es DatetimeIndex.")
+            # Si tu índice no es 'Date', ajusta esto.
+            # Por ahora, asumiremos que el 'timestamp' que nos pasan
+            # se puede usar para localizar en el índice.
 
     def record_state(self, timestamp: any, portfolio_value: float):
         """Guarda una instantánea del valor del portafolio en un momento dado."""
@@ -23,125 +40,89 @@ class Exchange:
             "portfolio_value": portfolio_value
         })
 
-    def _check_balace(self, quantity:float):
-        """Verify if there is enough balance to place an order."""
-        if self.balance >= quantity:
-            return True
-        else:
-            return False
-    
-    def get_last_price(self, timestamp: any) -> float:
-        """Get the last price from data based on timestamp."""
-        row = self.data[self.data['Date'] == timestamp]
-        if not row.empty:
-            return row['Close'].values[0]
-        else:
-            raise ValueError("Timestamp not found in data.")
+    def get_last_price(self, timestamp: any, asset_col: str) -> float:
+        """Obtiene el último precio de los datos para un activo específico."""
+        try:
+            return self.historical_data.loc[timestamp, asset_col]
+        except KeyError:
+            raise ValueError(f"Timestamp {timestamp} o asset {asset_col} no encontrados en data.")
 
-    def place_order(self, timestamp:object|str , type:str, quantity:float, 
-                    take_profit:float=None, stop_loss:float=None):
+    def execute_trade(self, timestamp: any, asset_col: str, trade_type: str, quantity_units: float):
         """
-        Places an order in the market.
-
-        Parameters:
-            timestamp : int
-                The time at which the order is placed, represented as a Unix timestamp.
-            type : str
-                The type of the order (e.g. 'long' or 'short').
-            quantity : float
-                The amount of the USD to be ordered.
-            take_profit : float
-                The returns level at which to take profit from the order (e.g. 0.01). Default is None.
-            stop_loss : float
-                The returns level at which to stop loss on the order. Default is None.
-        Returns:
-            None
+        Ejecuta una orden de mercado (compra o venta) para un activo específico.
+        'quantity_units' es en unidades del activo (ej. 10 shares).
         """
-        if self._check_balace(quantity):
-            self.balance -= quantity  # Deduct the quantity from balance
-            self.active_orders.append({
-                "timestamp": timestamp,
-                "type": type,
-                "quantity": quantity,
-                "price": self.get_last_price(timestamp),
-                "take_profit": take_profit,
-                "stop_loss": stop_loss,
-                "order_value": quantity
-            })
-
-    def _check_order(self, timestamp: any, order: dict):
-        current_price = self.get_last_price(timestamp)
-        difference = (current_price / order['price']) - 1
-        should_close = False
-        if order['type'] == 'long':
-            # Lógica para CERRAR un LONG
-            # 1. Take Profit: El precio actual supera o iguala el TP
-            if order['take_profit'] is not None and difference >= order['take_profit']:
-                should_close = True
-                result = order['quantity'] * (1 + order['take_profit'])
-                self.balance += result * (1 - self.fee_rate)
-            # 2. Stop Loss: El precio actual cae por debajo o iguala el SL
-            elif order['stop_loss'] is not None and difference <= order['stop_loss']:
-                should_close = True
-                result = order['quantity'] * (1 + order['stop_loss'])
-                self.balance += result * (1 - self.fee_rate)
-            # Actualizar el valor de la orden
-            else:
-                order['order_value'] = order['quantity'] * (1 + difference)
+        if quantity_units <= 0:
+            return  # No hacer nada si la cantidad es cero
             
+        price = self.get_last_price(timestamp, asset_col)
+        trade_value_usd = quantity_units * price
+        commission = trade_value_usd * self.fee_rate
         
-        elif order['type'] == 'short':
-            # Lógica para CERRAR un SHORT
-            # 1. Take Profit: El precio actual cae por debajo o iguala el TP
-            if order['take_profit'] is not None and difference <= order['take_profit']:
-                should_close = True
-                result = order['quantity'] * (1 - order['take_profit'])
-                self.balance += result * (1 - self.fee_rate)
-            # 2. Stop Loss: El precio actual supera o iguala el SL
-            elif order['stop_loss'] is not None and difference >= order['stop_loss']:
-                should_close = True
-                result = order['quantity'] * (1 - order['stop_loss'])
-                self.balance += result * (1 - self.fee_rate)
-            # Actualizar el valor de la orden
-            else:
-                order['order_value'] = order['quantity'] * (1 - difference)
+        # Deducir comisión del balance EN TODAS LAS OPERACIONES
+        self.balance -= commission
 
-        if should_close:
-            # 1. Añadimos la información de cierre (¡tu requisito!)
-            order['timestamp_close'] = timestamp
-            order['price_close'] = current_price
-
-            # 2. CORRECCIÓN: Usamos .append() para añadir a la lista de ejecutadas
-            self.executed_orders.append(order)
-            # 3. Quitamos la orden de la lista de activas
-            self.active_orders.remove(order) 
+        if trade_type == 'buy':
+            # Comprar: Deducir costo (USD) del balance, Aumentar posición (unidades)
+            self.balance -= trade_value_usd
+            self.positions[asset_col] += quantity_units
         
+        elif trade_type == 'sell':
+            # Vender: Aumentar balance (USD), Reducir posición (unidades)
+            self.balance += trade_value_usd
+            self.positions[asset_col] -= quantity_units
+        
+        else:
+            raise ValueError(f"Tipo de trade '{trade_type}' no reconocido.")
+
+        self.executed_trades.append({
+            "timestamp": timestamp,
+            "asset": asset_col,
+            "type": trade_type,
+            "quantity_units": quantity_units,
+            "price": price,
+            "trade_value_usd": trade_value_usd,
+            "commission_paid": commission
+        })
+
     def update_exchange_status(self, timestamp: any):
         """
-        Update the engine's active orders for the given timestamp and record the resulting portfolio value.
-        This method iterates over a shallow copy of self.active_orders and checks each order
-        against the provided timestamp by calling self._check_order(timestamp, order). Using
-        a copy allows individual orders to be removed or modified inside _check_order
-        without disrupting iteration.
-        After processing all orders, the method computes the current portfolio value as:
-        and then records the state by calling self.record_state(timestamp, portfolio_value).
-        Parameters:
-            timestamp : any
-                The current time indicator used to evaluate orders (e.g., a datetime, int, or float).
-                This value is passed to self._check_order and self.record_state.
-        Side effects
-            - May modify self.active_orders (orders can be filled, cancelled, or otherwise removed).
-            - May modify other mutable state via self._check_order (for example, self.balance or positions).
-            - Calls self.record_state(timestamp, portfolio_value) to persist the computed portfolio value.
-        Returns:
-            None
-
-        Notes:
-            - The method assumes orders in self.active_orders are mappings containing an 'order_value' numeric field.
-            - Uses a shallow copy (self.active_orders[:]) to permit safe in-loop modifications performed by _check_order.
-        """
-        for order in self.active_orders[:]:  # Usamos una copia para evitar problemas al eliminar
-            self._check_order(timestamp, order)
+        Actualiza el estado del exchange:
+        1. Calcula y aplica costos de préstamo (borrow costs) diarios.
+        2. Calcula el valor total del portafolio.
+        3. Registra el estado (historial de balance).
         
-        portfolio_value = self.balance + sum(order['order_value'] for order in self.active_orders)
-        self.record_state(timestamp, portfolio_value) 
+        NOTA: Asume que cada llamada es un 'día' para el borrow_rate_daily.
+        Si tus datos son horarios, deberías ajustar la tasa (rate / 24).
+        """
+        
+        # --- 1. Aplicar Costos de Préstamo (Borrow Costs) ---
+        short_value_usd = 0.0
+        price1 = self.get_last_price(timestamp, self.asset1_col)
+        price2 = self.get_last_price(timestamp, self.asset2_col)
+        
+        if self.positions[self.asset1_col] < 0:
+            # Posición corta en asset1. Valor es negativo, lo hacemos positivo.
+            short_value_usd += abs(self.positions[self.asset1_col] * price1)
+            
+        if self.positions[self.asset2_col] < 0:
+            # Posición corta en asset2
+            short_value_usd += abs(self.positions[self.asset2_col] * price2)
+        
+        if short_value_usd > 0:
+            # Asumimos que los datos son DIARIOS según el requerimiento.
+            borrow_cost = short_value_usd * self.borrow_rate_daily
+            self.balance -= borrow_cost  # Deducir costo del balance
+
+        
+        # --- 2. Calcular Valor del Portafolio ---
+        asset1_value = self.positions[self.asset1_col] * price1
+        asset2_value = self.positions[self.asset2_col] * price2
+        
+        portfolio_value = self.balance + asset1_value + asset2_value
+        
+        # --- 3. Registrar Estado ---
+        self.record_state(timestamp, portfolio_value)
+        
+        # --- 4. Actualizar timestamp para el próximo cálculo de costos ---
+        self.last_timestamp = timestamp
