@@ -127,6 +127,8 @@ class MarketNeutralStrategy(Strategy):
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
         self.spread_history = []
+        self.hedge_ratio_history = [] # Para guardar el historial de betas
+        self.z_score_history = []
         
         # Para 'tp' y 'sl' (para compatibilidad con el Orchestrator)
         # Nota: Esta estrategia usa 'exit_threshold' para cerrar, no TP/SL.
