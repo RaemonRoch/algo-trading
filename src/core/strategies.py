@@ -169,84 +169,94 @@ class MarketNeutralStrategy(Strategy):
         self.current_state_covariance = initial_state_covariance
 
     def get_signals(self, features: pd.DataFrame) -> np.ndarray:
-        """
-        Actualiza el filtro de Kalman y genera una señal de trading.
-        
-        'features' debe ser un DataFrame de 1 fila con los precios actuales.
-        
-        Señales generadas:
-         1: Comprar Spread (Long P1, Short P2)
-         0: Vender Spread (Short P1, Long P2)
-        -1: Mantener / Neutral (No hacer nada)
-        -2: Cerrar Posición (Reversión a la media)
-        """
-        
-        # 1. Extraer precios del DataFrame (que es 1 fila)
-        try:
-            # P1 es la variable dependiente (Y)
-            p1 = features[self.asset1_col].values[0] 
-            # P2 es la variable independiente (X)
-            p2 = features[self.asset2_col].values[0]
-        except (KeyError, IndexError):
-            print("Error: 'features' no contiene las columnas de assets esperadas.")
-            return np.array([-1]) # Señal neutral
-
-        # 2. --- Actualización del Filtro de Kalman (Hedge Ratio) ---
-        
-        # Matriz de Observación (H): Cambia en cada paso del tiempo
-        # P1_t = [1, P2_t] * [beta_0, beta_1]_t + error_medicion
-        observation_matrix = np.array([[1, p2]])
-        
-        # Medición (Z)
-        observation = np.array([p1])
-
-        # Actualizar el filtro (paso de "filter" + "update")
-        # Esto calcula el nuevo estado [beta_0, beta_1] para el tiempo 't'
-        self.current_state_mean, self.current_state_covariance = \
-            self.kf_hedge.filter_update(
-                self.current_state_mean,
-                self.current_state_covariance,
-                observation=observation,
-                observation_matrix=observation_matrix
-            )
-        
-        # 3. --- Generación de Señal (Z-Score) ---
-        intercept, slope = self.current_state_mean
-        
-        # Calcular el spread (residual) actual usando el hedge ratio dinámico
-        spread = p1 - (intercept + slope * p2)
-        
-        # Guardar historial del spread para el Z-score
-        self.spread_history.append(spread)
-        if len(self.spread_history) > self.rolling_window:
-            self.spread_history.pop(0) # Mantener el tamaño de la ventana
-        
-        # Necesitamos suficientes datos para el Z-score
-        if len(self.spread_history) < self.rolling_window:
-            return np.array([-1]) # Neutral
-
-        # Calcular Z-score
-        mean_spread = np.mean(self.spread_history)
-        std_spread = np.std(self.spread_history)
-        
-        if std_spread < 1e-6: # Evitar división por cero
-            return np.array([-1]) # Neutral
+            """
+            Actualiza el filtro de Kalman y genera una señal de trading.
+            
+            'features' debe ser un DataFrame de 1 fila con los precios actuales.
+            
+            Señales generadas:
+            1: Comprar Spread (Long P1, Short P2)
+            0: Vender Spread (Short P1, Long P2)
+            -1: Mantener / Neutral (No hacer nada)
+            -2: Cerrar Posición (Reversión a la media)
+            """
+            
+            # 1. Extraer precios del DataFrame (que es 1 fila)
+            try:
+                p1 = features[self.asset1_col].values[0] 
+                p2 = features[self.asset2_col].values[0]
+                current_timestamp = features.index[0] 
                 
-        z_score = (spread - mean_spread) / std_spread
-        
-        # 4. --- Lógica de Decisión (Señal) ---
-        signal = -1 # Neutral por defecto
+            except (KeyError, IndexError):
+                print("Error: 'features' no contiene las columnas de assets esperadas.")
+                return np.array([-1]) # Señal neutral
 
-        if z_score < -self.entry_threshold:
-            signal = 1  # Long Spread (Comprar P1, Vender P2)
-        elif z_score > self.entry_threshold:
-            signal = 0  # Short Spread (Vender P1, Comprar P2)
-        elif abs(z_score) < self.exit_threshold:
-            # Si la señal estaba en 1 o 0, esta señal -2 indica "Cerrar"
-            signal = -2 
-        
-        # Retornamos un array de numpy como lo espera el Orchestrator
-        return np.array([signal])        
+            # 2. --- Actualización del Filtro de Kalman (Hedge Ratio) ---
+            
+            observation_matrix = np.array([[1, p2]])
+            observation = np.array([p1])
+
+            self.current_state_mean, self.current_state_covariance = \
+                self.kf_hedge.filter_update(
+                    self.current_state_mean,
+                    self.current_state_covariance,
+                    observation=observation,
+                    observation_matrix=observation_matrix
+                )
+            
+            # 3. --- Generación de Señal (Z-Score) ---
+            intercept, slope = self.current_state_mean
+            
+            # Guardar el historial del hedge ratio
+            self.hedge_ratio_history.append({
+                'timestamp': current_timestamp, 
+                'slope': slope, 
+                'intercept': intercept
+            })
+
+            spread = p1 - (intercept + slope * p2)
+            
+            # --- ¡CAMBIO IMPORTANTE! ---
+            # 1. Guardamos el spread en el historial completo.
+            self.spread_history.append(spread)
+            
+            # 2. YA NO CORTAMOS el historial (eliminamos el .pop(0))
+            # ---------------------------
+            
+            # Necesitamos suficientes datos para el Z-score (periodo de calentamiento)
+            if len(self.spread_history) < self.rolling_window:
+                return np.array([-1]) # Neutral
+
+            # --- ¡CAMBIO IMPORTANTE! ---
+            # 3. Calculamos el Z-score usando solo los ÚLTIMOS N elementos
+            #    de la lista, en lugar de la lista completa.
+            spread_window = self.spread_history[-self.rolling_window:]
+            mean_spread = np.mean(spread_window)
+            std_spread = np.std(spread_window)
+            # ---------------------------
+            
+            if std_spread < 1e-6: 
+                return np.array([-1]) 
+                    
+            z_score = (spread - mean_spread) / std_spread
+            
+            # Guardar el historial del Z-Score (para el gráfico)
+            self.z_score_history.append({
+                'timestamp': current_timestamp,
+                'z_score': z_score
+            })
+            
+            # 4. --- Lógica de Decisión (Señal) ---
+            signal = -1 
+
+            if z_score < -self.entry_threshold:
+                signal = 1  
+            elif z_score > self.entry_threshold:
+                signal = 0  
+            elif abs(z_score) < self.exit_threshold:
+                signal = -2 
+            
+            return np.array([signal])     
 
 class StrategyOrchestrator:
     """
@@ -276,6 +286,8 @@ class StrategyOrchestrator:
         # Nombres de las columnas de los assets
         self.asset1 = strategy.asset1_col
         self.asset2 = strategy.asset2_col
+        self.open_trade_details = {} 
+        self.trade_pnl_history = []
         
         print("StrategyOrchestrator listo para operar (modo Market-Neutral).")
 

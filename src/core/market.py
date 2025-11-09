@@ -15,6 +15,7 @@ class Exchange:
     balance: float = 1_000_000
     fee_rate: float = 0.00125      # Requerimiento: 0.125%
     borrow_rate_daily: float = 0.0025  # Requerimiento: 0.25%
+    total_borrow_costs_paid: float = 0.0
     
     # --- Atributos de Estado ---
     positions: dict = field(default_factory=dict)
@@ -113,7 +114,7 @@ class Exchange:
             # Asumimos que los datos son DIARIOS según el requerimiento.
             borrow_cost = short_value_usd * self.borrow_rate_daily
             self.balance -= borrow_cost  # Deducir costo del balance
-
+            self.total_borrow_costs_paid += borrow_cost
         
         # --- 2. Calcular Valor del Portafolio ---
         asset1_value = self.positions[self.asset1_col] * price1
