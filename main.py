@@ -14,7 +14,7 @@ def run_strategy_backtest():
     
     # --- 1. Cargar y Preparar Datos ---
     print("Cargando datos reales de precios...")
-    data = pd.read_csv("../data/prices.csv")
+    data = pd.read_csv("data/prices.csv")
     
     try:
         # 1. Convertir la columna a datetime
